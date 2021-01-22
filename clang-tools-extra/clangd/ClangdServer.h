@@ -331,6 +331,8 @@ public:
   LLVM_NODISCARD bool
   blockUntilIdleForTest(llvm::Optional<double> TimeoutSeconds = 10);
 
+  TUScheduler &getScheduler() { return WorkScheduler; }
+
 private:
   void formatCode(PathRef File, llvm::StringRef Code,
                   ArrayRef<tooling::Range> Ranges,

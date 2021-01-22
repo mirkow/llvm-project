@@ -18,6 +18,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Registry.h"
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <utility>
 
@@ -105,8 +106,10 @@ llvm::Expected<Tweak::Effect>
 Tweak::Effect::mainFileEdit(const SourceManager &SM,
                             tooling::Replacements Replacements) {
   auto PathAndEdit = fileEdit(SM, SM.getMainFileID(), std::move(Replacements));
-  if (!PathAndEdit)
+  if (!PathAndEdit) {
+    std::clog << "fileEdit failed" << std::endl;
     return PathAndEdit.takeError();
+  }
   Tweak::Effect E;
   E.ApplyEdits.try_emplace(PathAndEdit->first, PathAndEdit->second);
   return E;
