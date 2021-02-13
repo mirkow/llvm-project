@@ -54,7 +54,7 @@ std::vector<std::string> getNamespaces(const Decl &D);
 
 tooling::Replacement replaceDecl(const clang::SourceManager &SM,
                                  const Decl &Decl,
-                                 const std::string &ReplacementText = "");
+                                 const std::string &ReplacementText);
 
 size_t getSourceRangeLength(const clang::SourceManager &SM,
                             const SourceRange &Range);
@@ -67,7 +67,8 @@ std::string getSourceRangeAsString(const clang::SourceManager &SM,
 // int64_t positionToOffset(const StringRef &Code, const Position &Pos);
 
 llvm::Expected<llvm::StringRef> findFunctionDefinition(const StringRef &Code,
-                                                       int Cursor);
+                                                       int Cursor, int &Offset,
+                                                       int &Length);
 
 } // namespace clangd
 } // namespace clang

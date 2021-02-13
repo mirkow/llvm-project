@@ -28,18 +28,31 @@ public:
   Intent intent() const override { return Refactor; }
 
 private:
-  std::string calcClassDeclEdits(Effect &Effect, const CXXRecordDecl &ClassDecl,
+  std::string extractClassDeclEdits(Effect &Effect,
+                                    const CXXRecordDecl &ClassDecl,
+                                    const clang::SourceManager &SM);
+  std::string extractSourceEdits(Effect &Effect, const CXXRecordDecl &ClassDecl,
+                                 ParsedAST &AST, const SymbolIndex &Index);
+
+  Expected<std::vector<std::string>> calcStaticVariableDefinitionStrings(
+      const CXXRecordDecl &ClassDecl, ParsedAST &AST, const SymbolIndex &Index,
+      std::map<std::string, std::string> &FileContentMap);
+
+  Expected<std::vector<std::string>> extractMethodDefinitionStrings(
+      Effect &Effect, const CXXRecordDecl &ClassDecl, ParsedAST &AST,
+      const SymbolIndex &Index,
+      std::map<std::string, std::string> &FileContentMap);
+
+  Expected<std::vector<std::string>> extractStaticVariableDefinitionEdits(
+      Effect &Effect, const CXXRecordDecl &ClassDecl, ParsedAST &AST,
+      const SymbolIndex &Index,
+      std::map<std::string, std::string> &FileContentMap);
+
+  bool hasSubRecordWithFunctions(const CXXRecordDecl &ClassDecl,
                                  const clang::SourceManager &SM);
-  std::string calcMethodDefinitionEdits(Effect &Effect,
-                                        const CXXRecordDecl &ClassDecl,
-                                        ParsedAST &AST,
-                                        const SymbolIndex &Index);
 
-  std::string calcStaticVariableDefinitionEdits(Effect &Effect,
-                                                const CXXRecordDecl &ClassDecl,
-                                                ParsedAST &AST,
-                                                const SymbolIndex &Index);
-
+  llvm::Error addEdit(FileEdits &EditMap, StringRef Filepath, StringRef Code,
+                      const tooling::Replacement &Repl) const;
   std::string RecordName;
 };
 

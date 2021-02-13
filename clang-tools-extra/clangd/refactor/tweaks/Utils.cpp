@@ -2,6 +2,7 @@
 #include "SourceCode.h"
 #include "clang/Basic/SourceLocation.h"
 
+#include <bits/stdint-intn.h>
 #include <clang/AST/DeclCXX.h>
 #include <cstddef>
 #include <sstream>
@@ -121,7 +122,7 @@ clang::clangd::getFunctionDefinitionString(const clang::SourceManager &sm,
 
   functionDefString << std::string(" ") << fDecl.getQualifiedNameAsString()
                     << "(";
-  int i = 0;
+  int I = 0;
   // std::cout << "def string: " << functionDefString.str() << std::endl;
   auto numParams = fDecl.getNumParams();
   // clang::FunctionTypeLoc loc = fDecl.getFunctionTypeLoc();
@@ -131,10 +132,10 @@ clang::clangd::getFunctionDefinitionString(const clang::SourceManager &sm,
   {
     auto params = fDecl.parameters(); // fDecl.getFunctionTypeLoc().getParams();
     for (const clang::ParmVarDecl *const param : params) {
-      i++;
+      I++;
       functionDefString << getTypeString(param->getType()) << " "
                         << param->getName().str();
-      if (i < params.size()) {
+      if (I < static_cast<int>(params.size())) {
         functionDefString << ", ";
       }
       // std::clog << "Param: " << param->getName().str() << " type: "
@@ -178,9 +179,9 @@ clang::clangd::getFunctionDefinitionString(const clang::SourceManager &sm,
   }
 
   if (withBody) {
-    auto body = fDecl.getBody();
-    if (body) {
-      functionDefString << "\n" + getSymbolString(sm, body->getSourceRange());
+    Stmt *Body = fDecl.getBody();
+    if (Body) {
+      functionDefString << "\n" + getSymbolString(sm, Body->getSourceRange());
     } else {
       functionDefString << "{}";
     }
@@ -223,7 +224,7 @@ std::string clang::clangd::getFunctionSignatureString(
                         << (withVariableNames
                                 ? std::string(" ") + param->getName().str()
                                 : "");
-      if (i < params.size()) {
+      if (i < static_cast<int>(params.size())) {
         functionDefString << ", ";
       }
     }
@@ -306,79 +307,153 @@ size_t clang::clangd::getSourceRangeLength(const clang::SourceManager &SM,
   return Length;
 }
 llvm::Expected<llvm::StringRef>
-clang::clangd::findFunctionDefinition(const StringRef &Code, int Cursor) {
-  bool InMultiLineComment = false;
-  bool InSingleLineComment = false;
-  bool InDoubleQuoteString = false;
-  bool InSingleQuoteString = false;
-  bool FoundFunctionOpeningBrace = false;
-  std::list<char> BraceStack;
-  size_t FunctionDefEnd = 0;
-  for (size_t I = Cursor; I < Code.size(); I++) {
-    assert(!(InSingleQuoteString && InDoubleQuoteString));
-    bool InString = InSingleQuoteString || InDoubleQuoteString;
-    auto PrevChar = I > 0 ? Code.data()[I - 1] : '\0';
-    auto Char = Code.data()[I];
-    auto Char2 = Code.size() > I + 1 ? Code.data()[I + 1] : '\0';
-    // auto Pos = offsetToPosition(Code, I);
-    if (!InMultiLineComment && !InString && Char == '/' && Char2 == '*') {
-      InMultiLineComment = true;
-    } else if (InMultiLineComment && Char == '*' && Char2 == '/') {
-      InMultiLineComment = false;
-    } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
-               Char == '/' && Char2 == '/') {
-      InSingleLineComment = true;
-    } else if (InSingleLineComment && (Char == '\n')) {
-      InSingleLineComment = false;
-    } else if (!InDoubleQuoteString && !InSingleQuoteString &&
-               PrevChar != '\\' && Char == '"') {
-      InDoubleQuoteString = true;
-    } else if (InDoubleQuoteString && !InSingleQuoteString &&
-               PrevChar != '\\' && Char == '"') {
-      InDoubleQuoteString = false;
-    } else if (!InDoubleQuoteString && !InSingleQuoteString &&
-               PrevChar != '\\' && Char == '\'') {
-      InDoubleQuoteString = true;
-    } else if (InSingleQuoteString && !InDoubleQuoteString &&
-               PrevChar != '\\' && Char == '\'') {
-      InDoubleQuoteString = false;
-    } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
-               (Char == '(' || Char == '{' || Char == '[')) { // || Char == '<'
-      if (Char == '{' && BraceStack.size() == 0) {
-        FoundFunctionOpeningBrace = true;
+clang::clangd::findFunctionDefinition(const StringRef &Code, int Cursor,
+                                      int &Offset, int &Length) {
+  int64_t FunctionDefBegin = -1;
+  int64_t FunctionDefEnd = -1;
+  { // Find function begin
+    bool InMultiLineComment = false;
+    bool InSingleLineComment = false;
+    bool InDoubleQuoteString = false;
+    bool InSingleQuoteString = false;
+    bool InMacro = false;
+    std::list<char> BraceStack;
+    for (size_t I = 0; I < static_cast<size_t>(Cursor); I++) {
+      assert(!(InSingleQuoteString && InDoubleQuoteString));
+      bool InString = InSingleQuoteString || InDoubleQuoteString;
+      auto PrevChar = I > 0 ? Code.data()[I - 1] : '\0';
+      auto Char = Code.data()[I];
+      auto Char2 = Code.size() > I + 1 ? Code.data()[I + 1] : '\0';
+      if (!InMultiLineComment && !InString && Char == '/' && Char2 == '*') {
+        InMultiLineComment = true;
+        InMacro = false;
+      } else if (InMultiLineComment && Char == '*' && Char2 == '/') {
+        InMultiLineComment = false;
+      } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+                 Char == '/' && Char2 == '/') {
+        InSingleLineComment = true;
+        InMacro = false;
+      } else if (InSingleLineComment && Char == '\n' && PrevChar != '\\') {
+        InSingleLineComment = false;
+      } else if (!InDoubleQuoteString && !InSingleQuoteString &&
+                 PrevChar != '\\' && Char == '"') {
+        InDoubleQuoteString = true;
+      } else if (InDoubleQuoteString && !InSingleQuoteString &&
+                 PrevChar != '\\' && Char == '"') {
+        InDoubleQuoteString = false;
+      } else if (!InDoubleQuoteString && !InSingleQuoteString &&
+                 PrevChar != '\\' && Char == '\'') {
+        InDoubleQuoteString = true;
+      } else if (InSingleQuoteString && !InDoubleQuoteString &&
+                 PrevChar != '\\' && Char == '\'') {
+        InDoubleQuoteString = false;
+      } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+                 Char == '#') {
+        InMacro = true;
+      } else if (InMacro && Char == '\n' && PrevChar != '\\') {
+        InMacro = false;
+        FunctionDefBegin = I + 1;
+      } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+                 !InMacro && (Char == ';' || Char == '}')) { // || Char == '<'
+        FunctionDefBegin = I + 1;
       }
-      BraceStack.push_back(Char);
-      // std::clog << "Added to stack: " << Char << " at " << Pos.line << ":"
-      //           << Pos.character << std::endl;
-    } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
-               (Char == ')' || Char == '}' || Char == ']')) { //  || Char == '>'
-      assert(!BraceStack.empty());
-      if (Char == '}' && BraceStack.size() == 1 && BraceStack.front() == '{') {
-        FunctionDefEnd = I + 1;
-        // std::clog << "Encountered function end: " << Char
-        //           << " Value in stack: " << BraceStack.back() << " at "
-        //           << Pos.line << ":" << Pos.character << std::endl;
-        break;
-      }
-      if ((Char == ')' && BraceStack.back() == '(') ||
-          (Char == '}' && BraceStack.back() == '{') ||
-          (Char == ']' && BraceStack.back() == '[')) {
-        // std::clog << "Removed from stack: " << Char << " at " << Pos.line <<
+    }
+    if (FunctionDefBegin < 0 || FunctionDefBegin > Cursor) {
+      FunctionDefBegin = Cursor;
+    }
+  }
+  { // Find function end
+    bool InMultiLineComment = false;
+    bool InSingleLineComment = false;
+    bool InDoubleQuoteString = false;
+    bool InSingleQuoteString = false;
+    std::list<char> BraceStack;
+    for (size_t I = Cursor; I < Code.size(); I++) {
+      assert(!(InSingleQuoteString && InDoubleQuoteString));
+      bool InString = InSingleQuoteString || InDoubleQuoteString;
+      auto PrevChar = I > 0 ? Code.data()[I - 1] : '\0';
+      auto Char = Code.data()[I];
+      auto Char2 = Code.size() > I + 1 ? Code.data()[I + 1] : '\0';
+      // auto Pos = offsetToPosition(Code, I);
+      if (!InMultiLineComment && !InString && Char == '/' && Char2 == '*') {
+        InMultiLineComment = true;
+      } else if (InMultiLineComment && Char == '*' && Char2 == '/') {
+        InMultiLineComment = false;
+      } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+                 Char == '/' && Char2 == '/') {
+        InSingleLineComment = true;
+      } else if (InSingleLineComment && Char == '\n' && PrevChar != '\\') {
+        InSingleLineComment = false;
+      } else if (!InDoubleQuoteString && !InSingleQuoteString &&
+                 PrevChar != '\\' && Char == '"') {
+        InDoubleQuoteString = true;
+      } else if (InDoubleQuoteString && !InSingleQuoteString &&
+                 PrevChar != '\\' && Char == '"') {
+        InDoubleQuoteString = false;
+      } else if (!InDoubleQuoteString && !InSingleQuoteString &&
+                 PrevChar != '\\' && Char == '\'') {
+        InDoubleQuoteString = true;
+      } else if (InSingleQuoteString && !InDoubleQuoteString &&
+                 PrevChar != '\\' && Char == '\'') {
+        InDoubleQuoteString = false;
+      } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+                 (Char == '(' || Char == '{' ||
+                  Char == '[')) { // || Char == '<'
+        // if (Char == '{' && BraceStack.size() == 0) {
+        //   FoundFunctionOpeningBrace = true;
+        // }
+        BraceStack.push_back(Char);
+        // std::clog << "Added to stack: " << Char << " at " << Pos.line <<
         // ":"
         //           << Pos.character << std::endl;
-        BraceStack.pop_back();
-      } else {
-        auto Pos = offsetToPosition(Code, I);
-        // std::clog << "Encountered: " << Char
-        //           << " Value in stack: " << BraceStack.back() << " at "
-        //           << Pos.line << ":" << Pos.character << std::endl;
+      } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+                 (Char == ')' || Char == '}' ||
+                  Char == ']')) { //  || Char == '>'
+        assert(!BraceStack.empty());
+        if (Char == '}' && BraceStack.size() == 1 &&
+            BraceStack.front() == '{') {
+          FunctionDefEnd = I + 1;
+          // std::clog << "Encountered function end: " << Char
+          //           << " Value in stack: " << BraceStack.back() << " at "
+          //           << Pos.line << ":" << Pos.character << std::endl;
+          break;
+        }
+        if ((Char == ')' && BraceStack.back() == '(') ||
+            (Char == '}' && BraceStack.back() == '{') ||
+            (Char == ']' && BraceStack.back() == '[')) {
+          // std::clog << "Removed from stack: " << Char << " at " << Pos.line
+          // <<
+          // ":"
+          //           << Pos.character << std::endl;
+          BraceStack.pop_back();
+        } else {
+          // auto Pos = offsetToPosition(Code, I);
+          // std::clog << "Encountered: " << Char
+          //           << " Value in stack: " << BraceStack.back() << " at "
+          //           << Pos.line << ":" << Pos.character << std::endl;
 
-        return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                       "Invalid braces encountered");
+          return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                         "Invalid braces encountered");
+        }
       }
     }
   }
-  return Code.substr(Cursor, FunctionDefEnd - Cursor);
+  for (int I = FunctionDefBegin; I < FunctionDefEnd; I++) {
+    if (!isspace(Code[I])) {
+      FunctionDefBegin = I;
+      break;
+    }
+  }
+
+  for (int I = FunctionDefEnd - 1; I >= FunctionDefBegin; I--) {
+    if (!isspace(Code[I])) {
+      FunctionDefEnd = I + 1;
+      break;
+    }
+  }
+  Offset = FunctionDefBegin;
+  Length = FunctionDefEnd - FunctionDefBegin;
+  return Code.substr(FunctionDefBegin, Length).trim();
 }
 // int64_t clang::clangd::positionToOffset(const StringRef &Code,
 //                                         const Position &Pos) {
@@ -400,3 +475,7 @@ clang::clangd::findFunctionDefinition(const StringRef &Code, int Cursor) {
 //   }
 //   return -1;
 // }
+
+#define MACRO                                                                  \
+  \ //dasdas \
+dasdas
