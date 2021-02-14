@@ -8,7 +8,9 @@
  *
  */
 #pragma once
+#include "ParsedAST.h"
 #include "refactor/Tweak.h"
+#include "clang/Basic/TokenKinds.h"
 
 namespace clang {
 namespace clangd {
@@ -30,7 +32,7 @@ public:
 private:
   std::string extractClassDeclEdits(Effect &Effect,
                                     const CXXRecordDecl &ClassDecl,
-                                    const clang::SourceManager &SM);
+                                    const ParsedAST &AST);
   std::string extractSourceEdits(Effect &Effect, const CXXRecordDecl &ClassDecl,
                                  ParsedAST &AST, const SymbolIndex &Index);
 
@@ -41,7 +43,8 @@ private:
   Expected<std::vector<std::string>> extractMethodDefinitionStrings(
       Effect &Effect, const CXXRecordDecl &ClassDecl, ParsedAST &AST,
       const SymbolIndex &Index,
-      std::map<std::string, std::string> &FileContentMap);
+      std::map<std::string, std::string> &FileContentMap,
+      std::vector<std::string> &IncludeStrings);
 
   Expected<std::vector<std::string>> extractStaticVariableDefinitionEdits(
       Effect &Effect, const CXXRecordDecl &ClassDecl, ParsedAST &AST,
@@ -53,6 +56,9 @@ private:
 
   llvm::Error addEdit(FileEdits &EditMap, StringRef Filepath, StringRef Code,
                       const tooling::Replacement &Repl) const;
+
+  static std::vector<std::string> extractIncludeStrings(const ParsedAST &AST);
+
   std::string RecordName;
 };
 

@@ -476,6 +476,68 @@ clang::clangd::findFunctionDefinition(const StringRef &Code, int Cursor,
 //   return -1;
 // }
 
-#define MACRO                                                                  \
-  \ //dasdas \
-dasdas
+std::vector<std::string> clang::clangd::FindIncludes(const StringRef &Code) {
+  std::vector<std::string> IncludeStrings;
+
+  bool InMultiLineComment = false;
+  bool InSingleLineComment = false;
+  bool InDoubleQuoteString = false;
+  bool InSingleQuoteString = false;
+  bool InMacro = false;
+  bool InInclude = false;
+  int IncludeStart = -1;
+  std::list<char> BraceStack;
+  for (size_t I = 0; I < Code.size(); I++) {
+    assert(!(InSingleQuoteString && InDoubleQuoteString));
+    bool InString = InSingleQuoteString || InDoubleQuoteString;
+    auto PrevChar = I > 0 ? Code.data()[I - 1] : '\0';
+    auto Char = Code.data()[I];
+    auto Char2 = Code.size() > I + 1 ? Code.data()[I + 1] : '\0';
+    if (!InMultiLineComment && !InString && Char == '/' && Char2 == '*') {
+      InMultiLineComment = true;
+      InMacro = false;
+    } else if (InMultiLineComment && Char == '*' && Char2 == '/') {
+      InMultiLineComment = false;
+    } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+               Char == '/' && Char2 == '/') {
+      InSingleLineComment = true;
+      InMacro = false;
+    } else if (InSingleLineComment && Char == '\n' && PrevChar != '\\') {
+      InSingleLineComment = false;
+    } else if (!InDoubleQuoteString && !InSingleQuoteString &&
+               PrevChar != '\\' && Char == '"') {
+      InDoubleQuoteString = true;
+    } else if (InDoubleQuoteString && !InSingleQuoteString &&
+               PrevChar != '\\' && Char == '"') {
+      InDoubleQuoteString = false;
+    } else if (!InDoubleQuoteString && !InSingleQuoteString &&
+               PrevChar != '\\' && Char == '\'') {
+      InDoubleQuoteString = true;
+    } else if (InSingleQuoteString && !InDoubleQuoteString &&
+               PrevChar != '\\' && Char == '\'') {
+      InDoubleQuoteString = false;
+    } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+               Char == '#') {
+      if (Code.substr(I).startswith("#include")) {
+        InInclude = true;
+        IncludeStart = I;
+      } else {
+        InMacro = true;
+      }
+    } else if (InMacro && Char == '\n' && PrevChar != '\\') {
+      InMacro = false;
+    } else if (InInclude && Char == '\n' && PrevChar != '\\') {
+      InInclude = false;
+      if (IncludeStart >= 0) {
+        IncludeStrings.push_back(
+            Code.substr(IncludeStart, I - IncludeStart).str());
+      } else {
+        std::cerr << "Encountered invalid include string" << std::endl;
+      }
+    } else if (!InSingleLineComment && !InMultiLineComment && !InString &&
+               !InMacro && (Char == ';' || Char == '}')) { // || Char == '<'
+    }
+  }
+
+  return IncludeStrings;
+}

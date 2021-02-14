@@ -69,6 +69,7 @@ std::string getSourceRangeAsString(const clang::SourceManager &SM,
 llvm::Expected<llvm::StringRef> findFunctionDefinition(const StringRef &Code,
                                                        int Cursor, int &Offset,
                                                        int &Length);
+std::vector<std::string> FindIncludes(const StringRef &Code);
 
 } // namespace clangd
 } // namespace clang

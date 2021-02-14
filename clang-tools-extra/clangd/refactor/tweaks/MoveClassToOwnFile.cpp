@@ -18,6 +18,7 @@
 #include "clang/Basic/AttrKinds.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
+#include "clang/Basic/TokenKinds.h"
 #include "llvm/ADT/None.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringExtras.h"
@@ -27,6 +28,7 @@
 #include <AST.h>
 
 #include <climits>
+#include <experimental/bits/fs_ops.h>
 #include <experimental/filesystem>
 #include <fstream>
 #include <iostream>
@@ -87,7 +89,7 @@ Expected<Tweak::Effect> MoveClassToOwnFile::apply(const Selection &Inputs) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "Symbol under cursor is not a class");
   }
-  auto &SM = Inputs.AST->getSourceManager();
+
   // if (hasSubRecordWithFunctions(*ClassDecl, SM)) {
   //   return llvm::createStringError(
   //       llvm::inconvertibleErrorCode(),
@@ -98,7 +100,7 @@ Expected<Tweak::Effect> MoveClassToOwnFile::apply(const Selection &Inputs) {
   // locateSymbolAt(*Inputs.AST, Pos, Inputs.Index);
   Tweak::Effect Effect;
   {
-    auto ErrorStr = extractClassDeclEdits(Effect, *ClassDecl, SM);
+    auto ErrorStr = extractClassDeclEdits(Effect, *ClassDecl, *Inputs.AST);
     if (!ErrorStr.empty()) {
       return llvm::createStringError(llvm::inconvertibleErrorCode(), ErrorStr);
     }
@@ -150,10 +152,9 @@ Expected<Tweak::Effect> MoveClassToOwnFile::apply(const Selection &Inputs) {
   //                                  tooling::Replacements(DeleteFuncBody));
 }
 
-std::string
-MoveClassToOwnFile::extractClassDeclEdits(Effect &Effect,
-                                          const CXXRecordDecl &ClassDecl,
-                                          const clang::SourceManager &SM) {
+std::string MoveClassToOwnFile::extractClassDeclEdits(
+    Effect &Effect, const CXXRecordDecl &ClassDecl, const ParsedAST &AST) {
+  const clang::SourceManager &SM = AST.getSourceManager();
   auto FullClassDeclStr =
       getSymbolString(SM, ClassDecl.getSourceRange()) + ";\n\n";
   auto CurrentFileID = SM.getFileID(ClassDecl.getSourceRange().getBegin());
@@ -166,12 +167,13 @@ MoveClassToOwnFile::extractClassDeclEdits(Effect &Effect,
   auto Dir = std::experimental::filesystem::path(*OriginalHeaderFilepath)
                  .parent_path();
   auto TargetHeaderFilepath = Dir / (ClassDecl.getNameAsString() + ".h");
-  auto TargetHeaderExists =
-      std::experimental::filesystem::exists(TargetHeaderFilepath);
+  auto TargetHeaderExistsAndNotEmpty =
+      std::experimental::filesystem::exists(TargetHeaderFilepath) &&
+      std::experimental::filesystem::file_size(TargetHeaderFilepath) > 0;
   std::clog << "TargetHeaderFilepath: " << TargetHeaderFilepath.string()
-            << " exists: " << TargetHeaderExists << std::endl;
+            << " exists: " << TargetHeaderExistsAndNotEmpty << std::endl;
 
-  if (TargetHeaderExists) {
+  if (TargetHeaderExistsAndNotEmpty) {
     return "Target header file exists already: " +
            TargetHeaderFilepath.string();
   }
@@ -218,6 +220,11 @@ MoveClassToOwnFile::extractClassDeclEdits(Effect &Effect,
 
   auto NamespaceStrings = getNamespaces(ClassDecl);
   std::string HeaderStr = "#pragma once\n\n";
+
+  for (auto Include : extractIncludeStrings(AST)) {
+    HeaderStr += Include + "\n";
+  }
+  HeaderStr += "\n";
   for (auto NS : NamespaceStrings) {
     HeaderStr += "namespace " + NS + "\n{\n";
   }
@@ -278,8 +285,9 @@ std::string MoveClassToOwnFile::extractSourceEdits(
   std::clog << "Function definitions of " << ClassDecl.getNameAsString()
             << std::endl;
   std::map<std::string, std::string> FileContentMap;
-  auto DefStrings = extractMethodDefinitionStrings(Effect, ClassDecl, AST,
-                                                   Index, FileContentMap);
+  std::vector<std::string> IncludeStrings;
+  auto DefStrings = extractMethodDefinitionStrings(
+      Effect, ClassDecl, AST, Index, FileContentMap, IncludeStrings);
   if (!DefStrings) {
     std::string Str;
     llvm::raw_string_ostream S(Str);
@@ -289,6 +297,10 @@ std::string MoveClassToOwnFile::extractSourceEdits(
   auto NamespaceStrings = getNamespaces(ClassDecl);
   std::string SourceStr =
       "#include \"" + ClassDecl.getNameAsString() + ".h\"\n\n";
+  for (auto &Include : IncludeStrings) {
+    SourceStr += Include + "\n";
+  }
+  SourceStr += "\n";
   for (auto NS : NamespaceStrings) {
     SourceStr += "namespace " + NS + "\n{\n";
   }
@@ -306,12 +318,13 @@ std::string MoveClassToOwnFile::extractSourceEdits(
   }
   auto Dir = std::experimental::filesystem::path(*Filepath).parent_path();
   auto TargetSourceFilepath = Dir / (ClassDecl.getNameAsString() + ".cpp");
-  auto TargetSourceExists =
-      std::experimental::filesystem::exists(TargetSourceFilepath);
+  auto TargetSourceExistsAndNotEmpty =
+      std::experimental::filesystem::exists(TargetSourceFilepath) &&
+      std::experimental::filesystem::file_size(TargetSourceFilepath) > 0;
   std::clog << "TargetSourceFilepath: " << TargetSourceFilepath.string()
-            << " exists: " << TargetSourceExists << std::endl;
+            << " exists: " << TargetSourceExistsAndNotEmpty << std::endl;
 
-  if (TargetSourceExists) {
+  if (TargetSourceExistsAndNotEmpty) {
     return "Target source file exists already: " +
            TargetSourceFilepath.string();
   }
@@ -439,7 +452,8 @@ Expected<std::vector<std::string>>
 MoveClassToOwnFile::extractMethodDefinitionStrings(
     Effect &Effect, const CXXRecordDecl &ClassDecl, ParsedAST &AST,
     const SymbolIndex &Index,
-    std::map<std::string, std::string> &FileContentMap) {
+    std::map<std::string, std::string> &FileContentMap,
+    std::vector<std::string> &IncludeStrings) {
   std::vector<std::string> Result;
   const auto &SM = AST.getSourceManager();
   FileID CurrentFileID = SM.getFileID(ClassDecl.getSourceRange().getBegin());
@@ -499,7 +513,9 @@ MoveClassToOwnFile::extractMethodDefinitionStrings(
           } else {
             FileContent = FileContentMap.at(FilePathStr);
           }
-
+          auto Includes = FindIncludes(FileContent);
+          IncludeStrings.insert(IncludeStrings.end(), Includes.begin(),
+                                Includes.end());
           llvm::Expected<unsigned long> Offset = positionToOffset(
               StringRef(FileContent), LocSym.Definition->range.start);
 
@@ -591,6 +607,33 @@ MoveClassToOwnFile::addEdit(FileEdits &EditMap, StringRef Filepath,
   }
   std::clog << "extending entry" << std::endl;
   return Iter->second.Replacements.add(Repl);
+}
+std::vector<std::string>
+MoveClassToOwnFile::extractIncludeStrings(const ParsedAST &AST) {
+  std::vector<std::string> IncludeStrings;
+
+  // const SourceManager &SM = AST.getSourceManager();
+  for (auto &Include : AST.getIncludeStructure().MainFileIncludes) {
+    std::clog << "Include: " << Include.Written << std::endl;
+    std::string DirectiveStr;
+    if (Include.Directive == tok::pp_include) {
+      DirectiveStr = "#include";
+    } else if (Include.Directive == tok::pp_include_next) {
+      DirectiveStr = "#include_next";
+    }
+    if (!DirectiveStr.empty()) {
+      IncludeStrings.push_back(DirectiveStr + Include.Written);
+    }
+  }
+
+  // for (const syntax::Token &Token :
+  //      AST.getTokens().spelledTokens(SM.getMainFileID())) {
+  //   std::clog << "Tok: " << Token.str() << std::endl;
+  //   if (Token.kind() == tok::hash) {
+  //     IncludeStrings.push_back(Token.str());
+  //   }
+  // }
+  return IncludeStrings;
 }
 } // namespace clangd
 } // namespace clang
