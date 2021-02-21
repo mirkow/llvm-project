@@ -22,6 +22,7 @@ add_clang_library(
   ExtractVariable.cpp
   InsertVirtualFunctions.cpp
   InsertVirtualFunctionsBase.cpp
+  InsertMissingCases.cpp
   MoveClassToOwnFile.cpp
   ObjCLocalizeStringLiteral.cpp
   RawStringLiteral.cpp
