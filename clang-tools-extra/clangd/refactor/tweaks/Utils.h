@@ -51,6 +51,9 @@ std::string getFunctionSignatureString(const clang::SourceManager &sm,
                                        bool withFunctionName = true);
 
 std::vector<std::string> getNamespaces(const Decl &D);
+std::vector<std::string> getNamespaces(ASTContext &Context, const Stmt &S);
+std::vector<std::string>
+getRelativeNamespaces(ASTContext &Context, const Stmt &From, const Decl &To);
 
 tooling::Replacement replaceDecl(const clang::SourceManager &SM,
                                  const Decl &Decl,
@@ -58,6 +61,9 @@ tooling::Replacement replaceDecl(const clang::SourceManager &SM,
 
 size_t getSourceRangeLength(const clang::SourceManager &SM,
                             const SourceRange &Range);
+tooling::Replacement getReplacement(const clang::SourceManager &SM,
+                                    const SourceRange &Range,
+                                    const std::string &ReplacementText);
 
 std::string getSourceLocationAsString(const clang::SourceManager &SM,
                                       const SourceLocation &Loc);

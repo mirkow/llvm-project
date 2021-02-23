@@ -1,9 +1,13 @@
 #include "Utils.h"
 #include "SourceCode.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/Decl.h"
+#include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
 
 #include <bits/stdint-intn.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/ParentMapContext.h>
 #include <cstddef>
 #include <sstream>
 
@@ -248,32 +252,81 @@ std::string clang::clangd::getSymbolString(const clang::SourceManager &sm,
 
 std::vector<std::string> clang::clangd::getNamespaces(const Decl &D) {
   std::vector<std::string> Namespaces;
+
   for (const auto *Context = D.getDeclContext(); Context;
        Context = Context->getParent()) {
     if (llvm::isa<TranslationUnitDecl>(Context) ||
         llvm::isa<LinkageSpecDecl>(Context))
       break;
-
     if (const auto *ND = llvm::dyn_cast<NamespaceDecl>(Context))
       Namespaces.push_back(ND->getName().str());
   }
   std::reverse(Namespaces.begin(), Namespaces.end());
   return Namespaces;
 }
+
+std::vector<std::string> clang::clangd::getNamespaces(ASTContext &Context,
+                                                      const Stmt &S) {
+  std::vector<std::string> Namespaces;
+  std::function<void(const Stmt &)> StmtRecursion = [&](const Stmt &S) -> void {
+    auto Parents = Context.getParents(S);
+    const auto *Iter = Parents.begin();
+
+    if (Iter == Parents.end())
+      return;
+
+    const clang::Decl *CurDecl = Iter->get<clang::Decl>();
+    if (CurDecl) {
+      Namespaces = getNamespaces(*CurDecl);
+    }
+
+    const clang::Stmt *CurStmt = Iter->get<clang::Stmt>();
+    if (CurStmt) {
+      StmtRecursion(*CurStmt);
+    }
+  };
+  StmtRecursion(S);
+  return Namespaces;
+}
+
+std::vector<std::string>
+clang::clangd::getRelativeNamespaces(ASTContext &Context, const Stmt &From,
+                                     const Decl &To) {
+  auto CurrentNamespaces = getNamespaces(Context, From);
+  auto DeclNamespaces = getNamespaces(To);
+  size_t I = 0;
+  while (I < DeclNamespaces.size() && I < CurrentNamespaces.size() &&
+         DeclNamespaces.at(I) == CurrentNamespaces.at(I)) {
+    I++;
+  }
+  std::vector<std::string> RelativeNamespaces;
+  while (I < DeclNamespaces.size()) {
+    RelativeNamespaces.push_back(DeclNamespaces.at(I));
+    I++;
+  }
+  return RelativeNamespaces;
+}
+
 clang::tooling::Replacement
 clang::clangd::replaceDecl(const clang::SourceManager &SM, const Decl &Decl,
                            const std::string &ReplacementText) {
   SourceRange DeclRange(Decl.getSourceRange());
-  SourceLocation DeclBegin(DeclRange.getBegin());
-  SourceLocation DeclStartEnd(DeclRange.getEnd());
-  SourceLocation DeclEndEnd(getEndPositionOfToken(DeclStartEnd, SM));
-  auto Length = getSourceRangeLength(SM, DeclRange);
-  // std::clog << "character after decl: " << SM.getCharacterData(DeclEndEnd)
-  //           << std::endl;
-  if (*SM.getCharacterData(DeclEndEnd) == ';') {
+  return getReplacement(SM, DeclRange, ReplacementText);
+}
+
+clang::tooling::Replacement
+clang::clangd::getReplacement(const clang::SourceManager &SM,
+                              const SourceRange &Range,
+                              const std::string &ReplacementText) {
+
+  SourceLocation RangeBegin(Range.getBegin());
+  SourceLocation RangeStartEnd(Range.getEnd());
+  SourceLocation RangeEndEnd(getEndPositionOfToken(RangeStartEnd, SM));
+  auto Length = getSourceRangeLength(SM, Range);
+  if (*SM.getCharacterData(RangeEndEnd) == ';') {
     Length += 1; // replace semicolon
   }
-  return tooling::Replacement(SM, DeclBegin, Length, ReplacementText);
+  return tooling::Replacement(SM, RangeBegin, Length, ReplacementText);
 }
 
 std::string

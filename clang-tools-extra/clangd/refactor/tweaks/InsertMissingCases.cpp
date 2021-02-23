@@ -14,6 +14,8 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/Basic/LLVM.h"
+#include "clang/Basic/SourceLocation.h"
+#include "llvm/ADT/StringExtras.h"
 
 // #include "XRefs.h"
 // #include "support/Logger.h"
@@ -52,80 +54,54 @@ bool InsertMissingCases::prepare(const Selection &Inputs) {
     std::clog << "node is nullptr" << std::endl;
     return false;
   }
-  // SourceManager &SM = Inputs.AST->getSourceManager();
   const ast_type_traits::DynTypedNode &AstNode = SelNode->ASTNode;
   const SwitchStmt *Switch = AstNode.get<SwitchStmt>();
-  // ASTNodeKind Kind = AstNode.getNodeKind();
-  // std::clog << "Kind: " << Kind.asStringRef().str() << " -  "
-  //           << AstNode.getSourceRange().printToString(SM) << std::endl;
+
   if (Switch && Switch->getCond() && Switch->getCond()->getExprStmt()) {
     const Expr *Cond = Switch->getCond();
 
-    // std::clog << "Cond: " << getSymbolString(SM, Cond->getSourceRange())
-    //           << std::endl;
-    // Cond->getExprStmt()->dump();
-    // std::clog << "ExprStmt string: "
-    //           << Cond->getExprStmt()->getType().getAsString() << std::endl;
-    // QualType Type = Cond->getExprStmt()->getType();
     std::vector<const EnumConstantDecl *> AllEnumValues, FoundEnumValues,
         MissingEnumValues;
     if (!Cond->getExprStmt()->children().empty()) {
       const Stmt *Child = *Cond->getExprStmt()->child_begin();
-      // DeclStmt *const *Decl = cast<DeclStmt *>(Child);
-      // Child->child_begin()->getStmtClass()
-      // DeclRefExpr v;
 
       if (const ImplicitCastExpr *Cast =
               dyn_cast_or_null<ImplicitCastExpr>(Child)) {
         QualType Type = Cast->getType();
-        // std::clog << "Cast Type: " << Cast->getType().getAsString()
-        //           << " enum: " << Type.getTypePtr()->isEnumeralType()
-        //           << "EnumDecl: "
-        //           << EnumDecl::classof(Type.getTypePtr()->getAsTagDecl())
-        //           << std::endl;
-        // TagDecl *EnumVar = Type.getTypePtr()->getAsTagDecl();
+
         EnumDecl *CurEnumDecl =
             dyn_cast_or_null<EnumDecl>(Type.getTypePtr()->getAsTagDecl());
+
+        RequiredNamespaces = getRelativeNamespaces(Inputs.AST->getASTContext(),
+                                                   *Switch, *CurEnumDecl);
         if (CurEnumDecl) {
           for (EnumConstantDecl *E : CurEnumDecl->enumerators()) {
-            // std::clog << "\t enum: " << e->getNameAsString() << std::endl;
             AllEnumValues.push_back(E);
+            OrderedEnumValues.push_back(
+                std::make_pair(E->getNameAsString(), Optional<SourceRange>()));
           }
         }
       }
     }
-    std::clog << "body:" << std::endl;
-    // Switch->getBody()->dump();
+
+    // Find Case and Enum cast Decl. Not a recursion since the depth should
+    // always be the same?
     if (Switch->getBody()) {
       for (const Stmt *C : Switch->getBody()->children()) {
-        // C->dump();
-        // std::cerr << "C->getStmtClass(): " << C->getStmtClassName()
-        //           << std::endl;
         if (C->getStmtClass() == Stmt::CaseStmtClass) {
           for (const Stmt *C2 : C->children()) {
-            // C2->dump();
-            // std::cerr << "C2->getStmtClass(): " << C2->getStmtClassName()
-            //           << std::endl;
+
             for (const Stmt *C3 : C2->children()) {
-              // std::cerr << "C3->getStmtClass(): " << C3->getStmtClassName()
-              //           << std::endl;
+
               for (const Stmt *C4 : C3->children()) {
-                // std::cerr << "C4->getStmtClass(): " << C4->getStmtClassName()
-                //           << " DeclRefExpr: " << DeclRefExpr::classof(C4)
-                //           << std::endl;
-                if (const DeclRefExpr *expr =
+
+                if (const DeclRefExpr *CurExpr =
                         dyn_cast_or_null<DeclRefExpr>(C4)) {
-                  const ValueDecl *CurEnumDecl = expr->getDecl();
-                  // std::cerr << "EnumConstantDecl: "
-                  //           << EnumConstantDecl::classof(CurEnumDecl) << " "
-                  //           << CurEnumDecl->getNameAsString() << std::endl;
+                  const ValueDecl *CurEnumDecl = CurExpr->getDecl();
+
                   if (const EnumConstantDecl *CurEnumValue =
                           dyn_cast_or_null<EnumConstantDecl>(CurEnumDecl)) {
                     FoundEnumValues.push_back(CurEnumValue);
-                    // std::cerr
-                    //     << "CurEnumValue: " <<
-                    //     CurEnumValue->getNameAsString()
-                    //     << std::endl;
                   }
                 }
               }
@@ -146,19 +122,11 @@ bool InsertMissingCases::prepare(const Selection &Inputs) {
         MissingEnumValues.push_back(Candidate);
       }
     }
-    // auto End = std::chrono::steady_clock::now();
-    // std::cerr << "Prepare took "
-    //           << std::chrono::duration_cast<std::chrono::microseconds>(End -
-    //                                                                    Start)
-    //                  .count()
-    //           << " us" << std::endl;
+
     if (!MissingEnumValues.empty()) {
-      // std::cerr << "Missing enum values: ";
       for (const EnumConstantDecl *Enum : MissingEnumValues) {
-        // std::cerr << Enum->getNameAsString() << " ";
-        MissingEnumValueStrings.push_back(Enum->getQualifiedNameAsString());
+        MissingEnumValueStrings.push_back(Enum->getNameAsString());
       }
-      // std::cerr << std::endl;
       return true;
     }
   }
@@ -176,27 +144,71 @@ Expected<Tweak::Effect> InsertMissingCases::apply(const Selection &Inputs) {
   SourceManager &SM = Inputs.AST->getSourceManager();
   const ast_type_traits::DynTypedNode &AstNode = SelNode->ASTNode;
   const SwitchStmt *Switch = AstNode.get<SwitchStmt>();
-
+  std::map<std::string, SourceRange> ExistingCases;
   if (Switch) {
+
+    if (Switch->getBody()) {
+      for (const Stmt *C : Switch->getBody()->children()) {
+        if (C->getStmtClass() == Stmt::CaseStmtClass) {
+          std::string EnumValue;
+          for (const Stmt *C2 : C->children()) {
+
+            for (const Stmt *C3 : C2->children()) {
+
+              for (const Stmt *C4 : C3->children()) {
+
+                if (const DeclRefExpr *CurExpr =
+                        dyn_cast_or_null<DeclRefExpr>(C4)) {
+                  const ValueDecl *CurEnumDecl = CurExpr->getDecl();
+
+                  if (const EnumConstantDecl *CurEnumValue =
+                          dyn_cast_or_null<EnumConstantDecl>(CurEnumDecl)) {
+                    EnumValue = CurEnumValue->getNameAsString();
+                  }
+                }
+              }
+            }
+          }
+          if (!EnumValue.empty()) {
+            for (auto &Pair : OrderedEnumValues)
+              if (Pair.first == EnumValue)
+                Pair.second = C->getSourceRange();
+          }
+        }
+      }
+    }
+
     unsigned int Indentation =
         SM.getSpellingColumnNumber(Switch->getSourceRange().getBegin());
     std::string IndentationStr = std::string(Indentation, ' ');
-    std::clog << "Switch Body: "
-              << getSymbolString(SM, Switch->getBody()->getSourceRange())
-              << std::endl;
-    std::string InsertionText = "\n";
-    for (auto &EnumValueStr : MissingEnumValueStrings) {
-      InsertionText +=
-          IndentationStr + "case " + EnumValueStr + ":\n\tbreak;\n";
+
+    auto NSString =
+        llvm::join(RequiredNamespaces.begin(), RequiredNamespaces.end(), "::");
+    if (!NSString.empty()) {
+      NSString += "::";
     }
-    std::clog << "Insertion:\n" << InsertionText << std::endl;
+    std::string InsertionText = "\n";
+
     tooling::Replacements R;
+    for (const auto &Pair : OrderedEnumValues) {
+
+      if (Pair.second) {
+        InsertionText += getSymbolString(SM, *Pair.second) + ";\n";
+
+        if (auto Err = R.add(getReplacement(SM, *Pair.second, ""))) {
+          return std::move(Err);
+        }
+      } else {
+        InsertionText +=
+            IndentationStr + "case " + NSString + Pair.first + ":\n";
+        InsertionText += IndentationStr + "\tbreak;\n";
+      }
+    }
+
     if (auto Err = R.add(tooling::Replacement(
             SM,
             Switch->getBody()->getSourceRange().getBegin().getLocWithOffset(1),
             0, InsertionText))) {
-      std::clog << "Couldnt add replacement " << std::endl;
-      return std::move(Err);
     }
 
     return Effect::mainFileEdit(Inputs.AST->getASTContext().getSourceManager(),

@@ -10,7 +10,10 @@
 #pragma once
 #include "ParsedAST.h"
 #include "refactor/Tweak.h"
+#include "clang/Basic/LLVM.h"
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/TokenKinds.h"
+#include <string>
 
 namespace clang {
 namespace clangd {
@@ -29,6 +32,8 @@ public:
 
 private:
   std::vector<std::string> MissingEnumValueStrings;
+  std::vector<std::pair<std::string, Optional<SourceRange>>> OrderedEnumValues;
+  std::vector<std::string> RequiredNamespaces;
 };
 
 } // namespace clangd
