@@ -16,6 +16,7 @@ add_clang_library(
   DumpAST.cpp
   DefineInline.cpp
   DefineOutline.cpp
+  EnumToString.cpp
   ExpandAutoType.cpp
   ExpandMacro.cpp
   ExtractFunction.cpp
